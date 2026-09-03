@@ -218,10 +218,11 @@ Init transport layer queue (queue32)
   buffer_size=23680, queue_size=16 (23680 Bytes)
 ```
 
-The 32-bit transmit queue used for FreeRTOS has a fixed, statically allocated buffer (`queue32m.c`). Its size is derived from `OPTION_QUEUE_32_SEGMENT_COUNT`.
-There are no heap allocations in the 32-bit FreeRTOS build.
+`queue32m.c` uses a fixed, statically allocated transmit queue sized by `OPTION_QUEUE_32_SEGMENT_COUNT`. It does not use the heap.
 
-Each queue segment provides storage for up to one UDP payload plus 8 bytes of internal metadata. With the default MTU of 1500, each segment occupies 1480 bytes and the default 16 segments consume 23,680 bytes of static RAM. Increase `OPTION_QUEUE_32_SEGMENT_COUNT` if packets are dropped during DAQ bursts, or decrease it to reduce static RAM usage.
+With `configSUPPORT_STATIC_ALLOCATION=1`, XCPlite also uses static storage for its FreeRTOS mutexes, internal task control blocks and stacks. Otherwise, it uses the dynamic FreeRTOS creation APIs. This setting does not affect application- or kernel-owned objects.
+
+Each segment holds one UDP payload plus 8 bytes of metadata. With the default MTU of 1500, each segment occupies 1,480 bytes, so 16 segments require 23,680 bytes of static RAM. Adjust `OPTION_QUEUE_32_SEGMENT_COUNT` for DAQ burst capacity and RAM usage.
 
 The queue state and buffer use the default `.dtcm` and `.noncacheable` sections on embedded targets. These sections may be overridden in `xcplib_rtos_cfg.h` to match the application linker script:
 
@@ -470,8 +471,9 @@ from an ISR or from a high-priority FreeRTOS task.
 ## Notes
 
 - Calibration is lock-free and based on atomics.
-- The data acquisition queue is protected by a mutex.
-- XCP creates two tasks/threads for RX and TX.
+- `queue32m.c` uses a FreeRTOS critical section by default; define `OPTION_QUEUE32_MUTEX` to use a mutex.
+- The built-in server creates RX and TX tasks. Their control blocks and stacks are static when `configSUPPORT_STATIC_ALLOCATION=1`.
+- `vTaskDelete()` supports static tasks; it removes the task without freeing its static control block or stack.
 
 
 
@@ -484,7 +486,6 @@ from an ISR or from a high-priority FreeRTOS task.
 - xcpclient error message when .aml not found
 - Support for A2L generation of arrays
 - Disable the automatic GET_ID and try A2L upload in xcpclient
-- Check if the mutex-based queue is acceptable or if we should port one of the lockless queue implementations based on 64-bit atomic head and tail
 - Add TCP support
 - Do some benchmarking on CPU load, event trigger and calibration RCU latency
 - Avoid copying the transmit buffers

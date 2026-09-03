@@ -375,16 +375,24 @@ void mutexInit(MUTEX *m, bool recursive, uint32_t spinCount) {
     (void)spinCount;
 #if configUSE_RECURSIVE_MUTEXES == 1
     m->recursive = recursive;
+#if configSUPPORT_STATIC_ALLOCATION == 1
+    m->handle = recursive ? xSemaphoreCreateRecursiveMutexStatic(&m->buffer) : xSemaphoreCreateMutexStatic(&m->buffer);
+#else
     m->handle = recursive ? xSemaphoreCreateRecursiveMutex() : xSemaphoreCreateMutex();
+#endif
 #else
     if (recursive) {
         m->handle = NULL;
         assert(!recursive); // Recursive FreeRTOS mutexes are disabled in this configuration
         return;
     }
+#if configSUPPORT_STATIC_ALLOCATION == 1
+    m->handle = xSemaphoreCreateMutexStatic(&m->buffer);
+#else
     m->handle = xSemaphoreCreateMutex();
 #endif
-    assert(m->handle != NULL); // heap exhausted – increase configTOTAL_HEAP_SIZE
+#endif
+    assert(m->handle != NULL); // Check mutex creation
 }
 
 void mutexDestroy(MUTEX *m) {

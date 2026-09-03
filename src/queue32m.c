@@ -13,14 +13,6 @@
 |
  ----------------------------------------------------------------------------*/
 
-/*
-
-@@@@ TODO:
-
-
-3. Power-of-2 segment count → replace modulo with AND
-*/
-
 #include "platform.h"   // for platform abstraction
 #include "xcplib_cfg.h" // for OPTION_xxx
 

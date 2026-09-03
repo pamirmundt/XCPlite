@@ -312,13 +312,16 @@ void platformShmUnlink(const char *name);
 
 typedef struct {
     SemaphoreHandle_t handle;
+#if configSUPPORT_STATIC_ALLOCATION == 1
+    StaticSemaphore_t buffer; // Static storage for the FreeRTOS mutex
+#endif
 #if configUSE_RECURSIVE_MUTEXES == 1
     bool recursive;
 #endif
 } MUTEX;
 
-#if configUSE_RECURSIVE_MUTEXES == 1
-#define MUTEX_INTIALIZER {NULL, false}
+#ifdef __cplusplus
+#define MUTEX_INTIALIZER {}
 #else
 #define MUTEX_INTIALIZER {NULL}
 #endif
@@ -373,17 +376,29 @@ typedef HANDLE THREAD_HANDLE;
 #define OPTION_FREERTOS_PRIORITY (tskIDLE_PRIORITY + 2U)
 #endif
 
-typedef TaskHandle_t THREAD_HANDLE;
 #if defined(ESP_PLATFORM)
 #define FREERTOS_TASK_STACK_DEPTH(stack_bytes) (stack_bytes)
 #else
 #define FREERTOS_TASK_STACK_DEPTH(stack_bytes) ((stack_bytes) / sizeof(StackType_t))
 #endif
+
+typedef TaskHandle_t THREAD_HANDLE;
+#if configSUPPORT_STATIC_ALLOCATION == 1
+// Each call site owns a persistent task control block and stack.
+#define create_thread(h, _attr, fn, args)                                                                                                                                          \
+    do {                                                                                                                                                                           \
+        static StaticTask_t task_buffer;                                                                                                                                           \
+        static StackType_t stack_buffer[FREERTOS_TASK_STACK_DEPTH(OPTION_FREERTOS_STACK_BYTES)];                                                                                  \
+        *(h) = xTaskCreateStatic((TaskFunction_t)(fn), #fn, FREERTOS_TASK_STACK_DEPTH(OPTION_FREERTOS_STACK_BYTES), (args), OPTION_FREERTOS_PRIORITY, stack_buffer, &task_buffer); \
+        assert(*(h) != NULL);                                                                                                                                                      \
+    } while (0)
+#else
 #define create_thread(h, _attr, fn, args)                                                                                                                                          \
     do {                                                                                                                                                                           \
         BaseType_t res = xTaskCreate((TaskFunction_t)(fn), #fn, FREERTOS_TASK_STACK_DEPTH(OPTION_FREERTOS_STACK_BYTES), (args), OPTION_FREERTOS_PRIORITY, (h));                    \
         assert(res == pdPASS);                                                                                                                                                     \
     } while (0)
+#endif
 #define join_thread(h) /* No blocking join in FreeRTOS; synchronize via event flag or semaphore */
 #define cancel_thread(h) vTaskDelete(h)
 #define get_thread_id() ((uint32_t)(uintptr_t)xTaskGetCurrentTaskHandle())
