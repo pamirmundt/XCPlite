@@ -61,7 +61,7 @@ xcplite_sources = [
 
 The FreeRTOS build of XCPlite:
 - Uses the FreeRTOS/lwIP socket, thread, mutex and clock platform abstractions in `src/platform.c`.
-- Uses the mutex-based 32-bit queue implementation in `src/queue32.c` or the critical-section-based variant `src/queue32m.c`.
+- Uses `src/queue32m.c` with mutex or critical-section synchronization.
 
 
 ### Key files in the xcplite source tree
