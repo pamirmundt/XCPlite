@@ -350,12 +350,17 @@ void queuePush(tQueueHandle _queue_handle, const tQueueBuffer *queue_buffer, boo
 // This function is thread safe, any thread can ask for the queue level
 // Not used by the queue implementation itself
 uint32_t queueLevel(tQueueHandle _queue_handle, uint32_t *queue_max_level) {
+    uint32_t level = 0;
+
+    LOCK;
     if (queue_max_level != NULL)
         *queue_max_level = sXcpQueue.queue_size;
     if (sXcpQueue.queue_len > 1 || (sXcpQueue.queue_len == 1 && sXcpQueue.msg_ptr != NULL && sXcpQueue.msg_ptr->size > 0)) {
-        return sXcpQueue.queue_len;
+        level = sXcpQueue.queue_len;
     }
-    return 0;
+    UNLOCK;
+
+    return level;
 }
 
 // Check if there is a message segment in the transmit queue
@@ -369,6 +374,8 @@ tQueueBuffer queuePop(tQueueHandle _queue_handle, bool accumulate, bool flush, u
 
     tXcpSegmentBuffer *b = NULL;
 
+    LOCK;
+
     // Return the number of packets lost since the last call to queuePop
     if (packets_lost != NULL) {
         *packets_lost = sXcpQueue.packets_lost;
@@ -376,8 +383,6 @@ tQueueBuffer queuePop(tQueueHandle _queue_handle, bool accumulate, bool flush, u
     }
 
     // Check if there is a message segment ready in the transmit queue
-    LOCK;
-
     if (sXcpQueue.queue_len >= 1) {
 
         b = &sXcpQueue.queue[sXcpQueue.queue_rp];
