@@ -1,6 +1,7 @@
 // XCP FreeRTOS demo application
 
 #include "assert.h"
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -360,13 +361,14 @@ static void test(void) {
 
         // Check timestamp resolution and XCP clock
         for (int i = 0; i < 20; i++) {
-            void Clock64_Update(void);
+#if !defined(FREE_RTOS_POSIX_SIM)
             Clock64_Update();
+#endif
 
             uint64_t t1 = ApplXcpGetClock64();
             vTaskDelay(pdMS_TO_TICKS(1000));
             uint64_t t2 = ApplXcpGetClock64();
-            printf("XCP clock resolution check: t1=%llu, t2=%llu, dt=%llu\n", t1, t2, t2 - t1);
+            printf("XCP clock resolution check: t1=%" PRIu64 ", t2=%" PRIu64 ", dt=%" PRIu64 "\n", t1, t2, t2 - t1);
         }
     } else {
         printf("Scheduler not running, skipping XCP clock check\n");
