@@ -86,13 +86,16 @@ int _kbhit(void) {
 #if defined(_FREE_RTOS) // FreeRTOS sleep
 
 // Minimum granularity is one tick (1 ms at configTICK_RATE_HZ = 1000).
-// Sub-millisecond delays are rounded up to the next tick.
+// Delays are rounded up to the next tick.
 void sleepUs(uint32_t us) {
-    TickType_t ticks = (us * configTICK_RATE_HZ) / 1000000UL;
+    TickType_t ticks = (TickType_t)((((uint64_t)us * configTICK_RATE_HZ) + 999999U) / 1000000U);
     vTaskDelay(ticks == 0U ? 1U : ticks);
 }
 
-void sleepMs(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms == 0U ? 1U : ms)); }
+void sleepMs(uint32_t ms) {
+    TickType_t ticks = (TickType_t)((((uint64_t)ms * configTICK_RATE_HZ) + 999U) / 1000U);
+    vTaskDelay(ticks == 0U ? 1U : ticks);
+}
 
 #elif defined(_WIN) // Windows
 
