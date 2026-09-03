@@ -536,7 +536,7 @@ bool socketBind(SOCKET_HANDLE socket, const uint8_t *addr, uint16_t port) {
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     if (addr != NULL && addr[0] != 0) {
-        a.sin_addr.s_addr = *(uint32_t *)addr;
+        memcpy(&a.sin_addr.s_addr, addr, sizeof(a.sin_addr.s_addr));
     } else {
         a.sin_addr.s_addr = htonl(INADDR_ANY);
     }
@@ -626,7 +626,7 @@ int16_t socketSendTo(SOCKET_HANDLE socket, const uint8_t *buffer, uint16_t buffe
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
     dst.sin_port = htons(port);
-    dst.sin_addr.s_addr = *(uint32_t *)addr;
+    memcpy(&dst.sin_addr.s_addr, addr, sizeof(dst.sin_addr.s_addr));
     if (time != NULL) {
         *time = clockGet(); // No hardware timestamps on lwIP; use XCP clock at send time
     }
