@@ -1107,9 +1107,9 @@ static void XcpClearDaq(void) {
 #endif
 }
 
-// Check if there is sufficient memory for the values of DaqCount, OdtCount and OdtEntryCount
+// Check if there is sufficient memory for the given DAQ, ODT and ODT entry counts
 // Return CRC_MEMORY_OVERFLOW if not
-static uint8_t XcpCheckMemory(void) {
+static uint8_t XcpCheckMemory(uint16_t daqCount, uint16_t odtCount, uint16_t odtEntryCount) {
 
     uint32_t s;
 
@@ -1120,8 +1120,7 @@ static uint8_t XcpCheckMemory(void) {
 #endif
 
     /* Check memory overflow */
-    s = (shared.daq_lists.daq_count * (uint32_t)sizeof(tXcpDaqList)) + (shared.daq_lists.odt_count * (uint32_t)sizeof(tXcpOdt)) +
-        (shared.daq_lists.odt_entry_count * ODT_ENTRY_SIZE);
+    s = (daqCount * (uint32_t)sizeof(tXcpDaqList)) + (odtCount * (uint32_t)sizeof(tXcpOdt)) + (odtEntryCount * ODT_ENTRY_SIZE);
     if (s >= XCP_DAQ_MEM_SIZE) {
         DBG_PRINTF_ERROR("DAQ memory overflow, %u of %u Bytes required\n", s, XCP_DAQ_MEM_SIZE);
         return CRC_MEMORY_OVERFLOW;
@@ -1141,18 +1140,17 @@ static uint8_t XcpCheckMemory(void) {
 // Allocate daqCount DAQ lists
 static uint8_t XcpAllocDaq(uint16_t daqCount) {
 
-    uint16_t daq;
-    uint8_t r;
-
     if (shared.daq_lists.odt_count != 0 || shared.daq_lists.odt_entry_count != 0)
         return CRC_SEQUENCE;
     if (daqCount == 0)
         return CRC_OUT_OF_RANGE;
 
+    uint8_t r = XcpCheckMemory(daqCount, shared.daq_lists.odt_count, shared.daq_lists.odt_entry_count);
+    if (r != 0)
+        return r;
+
     // Initialize
-    if (0 != (r = XcpCheckMemory()))
-        return r; // Memory overflow
-    for (daq = 0; daq < daqCount; daq++) {
+    for (uint16_t daq = 0; daq < daqCount; daq++) {
         DaqListEventChannelMut(daq) = XCP_UNDEFINED_EVENT_ID;
         DaqListAddrExtMut(daq) = XCP_UNDEFINED_ADDR_EXT;
 #ifdef XCP_MAX_EVENT_COUNT
@@ -1185,17 +1183,21 @@ static uint8_t XcpAllocOdt(uint16_t daq, uint8_t odtCount) {
     n = (uint32_t)shared.daq_lists.odt_count + (uint32_t)odtCount;
     if (n > 0xFFFF)
         return CRC_OUT_OF_RANGE; // Overall number of ODTs limited to 64K
+
+    uint8_t r = XcpCheckMemory(shared.daq_lists.daq_count, (uint16_t)n, shared.daq_lists.odt_entry_count);
+    if (r != 0)
+        return r;
+
     shared_mut.daq_lists.u.daq_list[daq].first_odt = shared.daq_lists.odt_count;
     shared_mut.daq_lists.odt_count = (uint16_t)n;
     shared_mut.daq_lists.u.daq_list[daq].last_odt = (uint16_t)(shared.daq_lists.odt_count - 1);
-    return XcpCheckMemory();
+    return 0;
 }
 
 // Increase current ODT size (absolute ODT index) size by n
 static bool XcpAdjustOdtSize(uint16_t daq, uint16_t odt, uint8_t n) {
 
     uint16_t size = (uint16_t)(DaqListOdtTable[odt].size + n);
-    DaqListOdtTableMut[odt].size = size;
 
 #ifdef XCP_ENABLE_TEST_CHECKS
     assert(odt >= DaqListFirstOdt(daq));
@@ -1208,6 +1210,7 @@ static bool XcpAdjustOdtSize(uint16_t daq, uint16_t odt, uint8_t n) {
 #else
     (void)daq;
 #endif
+    DaqListOdtTableMut[odt].size = size;
     return true;
 }
 
@@ -1221,7 +1224,7 @@ static uint8_t XcpAllocOdtEntry(uint16_t daq, uint8_t odt, uint8_t odtEntryCount
         return CRC_DAQ_CONFIG;
     if (shared.daq_lists.daq_count == 0 || shared.daq_lists.odt_count == 0)
         return CRC_SEQUENCE;
-    if (daq >= shared.daq_lists.daq_count || odtEntryCount == 0 || odt >= DaqListOdtCount(daq))
+    if (daq >= shared.daq_lists.daq_count || odt >= DaqListOdtCount(daq))
         return CRC_OUT_OF_RANGE;
 
     /* Absolute ODT entry count is limited to 64K */
@@ -1229,12 +1232,16 @@ static uint8_t XcpAllocOdtEntry(uint16_t daq, uint8_t odt, uint8_t odtEntryCount
     if (n > 0xFFFF)
         return CRC_MEMORY_OVERFLOW;
 
+    uint8_t r = XcpCheckMemory(shared.daq_lists.daq_count, shared.daq_lists.odt_count, (uint16_t)n);
+    if (r != 0)
+        return r;
+
     xcpFirstOdt = shared.daq_lists.u.daq_list[daq].first_odt;
     DaqListOdtTableMut[xcpFirstOdt + odt].first_odt_entry = shared.daq_lists.odt_entry_count;
     shared_mut.daq_lists.odt_entry_count = (uint16_t)n;
     DaqListOdtTableMut[xcpFirstOdt + odt].last_odt_entry = (uint16_t)(shared.daq_lists.odt_entry_count - 1);
     DaqListOdtTableMut[xcpFirstOdt + odt].size = 0;
-    return XcpCheckMemory();
+    return 0;
 }
 
 // Set ODT entry pointer
@@ -1279,21 +1286,20 @@ static uint8_t XcpAddOdtEntry(uint32_t addr, uint8_t ext, uint8_t size) {
         DBG_PRINTF_ERROR("DAQ list must have unique address extension, DAQ=%u, ODT=%u, ext=%u, daq_ext=%u\n", local.write_daq_daq, local.write_daq_odt, ext, daq_ext);
         return CRC_DAQ_CONFIG; // Error not unique address extension
     }
-    DaqListAddrExtMut(local.write_daq_daq) = ext;
 #endif
 
     uint32_t base_offset = 0;
 #ifdef XCP_ENABLE_DYN_ADDRESSING
+    uint16_t event = XCP_UNDEFINED_EVENT_ID;
     // DYN addressing mode, base pointer will given to XcpEventExt, event is encoded in the address
     if (XcpAddrIsDyn(ext)) {
-        uint16_t event = XcpAddrDecodeDynEvent(addr);
+        event = XcpAddrDecodeDynEvent(addr);
         base_offset = XcpAddrDecodeDynOffset(addr);
         uint16_t e0 = DaqListEventChannel(local.write_daq_daq);
         if (e0 != XCP_UNDEFINED_EVENT_ID && e0 != event) {
             DBG_PRINTF_ERROR("DAQ list must have unique event channel, DAQ=%u, ODT=%u, event=%u, DaqListEventChannel=%u\n", local.write_daq_daq, local.write_daq_odt, event, e0);
             return CRC_OUT_OF_RANGE; // Error event channel redefinition
         }
-        DaqListEventChannelMut(local_mut.write_daq_daq) = event;
     } else
 #endif
 #ifdef XCP_ENABLE_REL_ADDRESSING
@@ -1324,13 +1330,21 @@ static uint8_t XcpAddOdtEntry(uint32_t addr, uint8_t ext, uint8_t size) {
 #endif
                 return CRC_ACCESS_DENIED;
 
+    if (!XcpAdjustOdtSize(local.write_daq_daq, local.write_daq_odt, size))
+        return CRC_DAQ_CONFIG;
+
+#ifndef XCP_ENABLE_DAQ_ADDREXT
+    DaqListAddrExtMut(local.write_daq_daq) = ext;
+#endif
+#ifdef XCP_ENABLE_DYN_ADDRESSING
+    if (event != XCP_UNDEFINED_EVENT_ID)
+        DaqListEventChannelMut(local.write_daq_daq) = event;
+#endif
     DaqListOdtEntrySizeTableMut[local.write_daq_odt_entry] = size;
     DaqListOdtEntryAddrTableMut[local.write_daq_odt_entry] = base_offset; // Signed 32 bit offset relative to base pointer given to XcpEvent
 #ifdef XCP_ENABLE_DAQ_ADDREXT
     DaqListOdtEntryAddrExtTableMut[local.write_daq_odt_entry] = ext;
 #endif
-    if (!XcpAdjustOdtSize(local.write_daq_daq, local.write_daq_odt, size))
-        return CRC_DAQ_CONFIG;
     local_mut.write_daq_odt_entry++; // Autoincrement to next ODT entry, no autoincrementing over ODTs
     return 0;
 }
@@ -1353,6 +1367,9 @@ static uint8_t XcpSetDaqListMode(uint16_t daq, uint16_t event_id, uint8_t mode, 
     // Check if this event exists
     const tXcpEvent *event = XcpGetEvent(event_id); // Check if event exists
     if (event == NULL)
+        return CRC_OUT_OF_RANGE;
+#elif defined(XCP_MAX_EVENT_COUNT)
+    if (event_id >= XCP_MAX_EVENT_COUNT)
         return CRC_OUT_OF_RANGE;
 
 // Set the prescaler to the associated event, individual prescaler per DAQ list are not supported
@@ -1386,21 +1403,32 @@ static uint8_t XcpSetDaqListMode(uint16_t daq, uint16_t event_id, uint8_t mode, 
 #endif
 #endif
 
-    DaqListEventChannelMut(daq) = event_id;
-    DaqListModeMut(daq) = mode;
-    DaqListPriorityMut(daq) = prio;
-
     // Append daq to linked list of daq lists already associated to this event
 #ifdef XCP_MAX_EVENT_COUNT
     uint16_t daq0 = DaqListFirst(event_id);
-    uint16_t *daq0_next = &DaqListFirstMut(event_id);
-    while (daq0 != XCP_UNDEFINED_DAQ_LIST) {
-        assert(daq0 < shared.daq_lists.daq_count);
-        daq0 = DaqListNext(daq0);
-        daq0_next = &DaqListNextMut(daq0);
+    if (daq0 == XCP_UNDEFINED_DAQ_LIST) {
+        DaqListFirstMut(event_id) = daq;
+    } else {
+        for (;;) {
+            if (daq0 >= shared.daq_lists.daq_count) {
+                assert(false && "Invalid DAQ event list");
+                return CRC_DAQ_CONFIG;
+            }
+            if (daq0 == daq)
+                break; // DAQ list is already associated with this event
+            uint16_t next = DaqListNext(daq0);
+            if (next == XCP_UNDEFINED_DAQ_LIST) {
+                DaqListNextMut(daq0) = daq;
+                break;
+            }
+            daq0 = next;
+        }
     }
-    *daq0_next = daq;
 #endif
+
+    DaqListEventChannelMut(daq) = event_id;
+    DaqListModeMut(daq) = mode;
+    DaqListPriorityMut(daq) = prio;
 
     return 0;
 }
