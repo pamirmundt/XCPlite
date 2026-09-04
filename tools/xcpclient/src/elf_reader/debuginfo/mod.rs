@@ -96,6 +96,7 @@ pub(crate) struct DebugData {
     pub(crate) variables: IndexMap<String, Vec<VarInfo>>, // variable name -> list of VarInfo for instances with that name
     pub(crate) types: HashMap<usize, TypeInfo>,           // type reference -> TypeInfo
     pub(crate) typenames: HashMap<String, Vec<usize>>,    // type name -> list of type references
+    pub(crate) a2l_type_names: HashMap<usize, String>,    // type reference -> qualified A2L name, only for ambiguous type names
     pub(crate) demangled_names: HashMap<String, String>,  // mangled name -> demangled name
     pub(crate) unit_names: Vec<Option<String>>,           // list of compilation unit names by unit index
     pub(crate) sections: HashMap<String, (u64, u64)>,     // section name -> (start, end)
@@ -129,6 +130,12 @@ impl DebugData {
         };
 
         Some(file_name.replace('.', "_"))
+    }
+
+    /// Return the shortest unambiguous A2L name for a DWARF type.
+    pub(crate) fn get_a2l_type_name<'a>(&'a self, type_info: &'a TypeInfo) -> Option<&'a str> {
+        let type_name = type_info.name.as_deref()?;
+        Some(self.a2l_type_names.get(&type_info.dbginfo_offset).map_or(type_name, String::as_str))
     }
 
     // Get the address of the XCP event descriptor memory section

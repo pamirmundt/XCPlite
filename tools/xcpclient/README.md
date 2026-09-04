@@ -50,6 +50,7 @@ The DWARF type information is mapped to A2L objects as follows:
 | pointers as struct or class members | the address value as unsigned integer of the target's pointer size, the pointee is not followed |
 
 Type names which are not valid A2L identifiers (template instantiations such as `TplStruct<float>`) are sanitized to `TplStruct_float_`.
+Colliding C++ type names are qualified with their namespace or enclosing type (for example, `namespace_1.TypeA`).
 The `TYPEDEF_MEASUREMENT`/`TYPEDEF_CHARACTERISTIC` of a struct field is named after the field; if another structure has a field with
 the same name but a different type or metadata, the name is qualified with the structure name (`TplStruct_float_.value`).
 

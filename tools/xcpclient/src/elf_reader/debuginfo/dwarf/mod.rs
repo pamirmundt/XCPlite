@@ -7,7 +7,7 @@
 use indexmap::IndexMap;
 use std::ffi::OsStr;
 use std::ops::Index;
-use std::{collections::HashMap, fs::File};
+use std::{collections::HashMap, collections::HashSet, fs::File};
 
 type SliceType<'a> = EndianSlice<'a, RunTimeEndian>;
 
@@ -301,6 +301,14 @@ impl DebugDataReader<'_> {
     fn collect_debug_data(mut self, unit_idx_limit: usize) -> DebugData {
         let variables = self.load_variables(unit_idx_limit);
         let (types, typenames) = self.load_types(&variables);
+        let ambiguous_type_refs: HashSet<usize> = typenames
+            .values()
+            .filter(|type_refs| type_refs.len() > 1)
+            .flatten()
+            .copied()
+            .collect();
+        let qualified_type_names = self.load_qualified_type_names(&ambiguous_type_refs);
+        let a2l_type_names = make_a2l_type_names(&typenames, &qualified_type_names);
         let varname_list: Vec<&String> = variables.keys().collect();
         let demangled_names = demangle_cpp_varnames(&varname_list);
         let unit_names = std::mem::take(&mut self.unit_names);
@@ -309,6 +317,7 @@ impl DebugDataReader<'_> {
             variables,
             types,
             typenames,
+            a2l_type_names,
             demangled_names,
             unit_names,
             sections: self.sections,
@@ -404,6 +413,37 @@ impl DebugDataReader<'_> {
         }
 
         variables
+    }
+
+    fn load_qualified_type_names(&self, type_refs: &HashSet<usize>) -> HashMap<usize, String> {
+        let mut qualified_type_names = HashMap::new();
+        if type_refs.is_empty() {
+            return qualified_type_names;
+        }
+
+        for (unit, abbreviations) in &self.units.list {
+            let mut entries_cursor = unit.entries(abbreviations);
+            let mut context: Vec<(gimli::DwTag, Option<String>)> = Vec::new();
+            while let Ok(Some(entry)) = entries_cursor.next_dfs() {
+                let depth = entry.depth();
+                context.truncate(depth.saturating_sub(1) as usize);
+                let tag = entry.tag();
+                let type_ref = entry.offset().to_debug_info_offset(unit).map(|offset| offset.0);
+                let entry_name = if is_named_scope(tag) || type_ref.is_some_and(|type_ref| type_refs.contains(&type_ref)) {
+                    get_name_attribute(entry, &self.dwarf, unit).ok()
+                } else {
+                    None
+                };
+
+                if let (Some(type_ref), Some(type_name)) = (type_ref, &entry_name)
+                    && type_refs.contains(&type_ref)
+                {
+                    qualified_type_names.insert(type_ref, make_qualified_type_name(&context, type_name));
+                }
+                context.push((tag, if is_named_scope(tag) { entry_name } else { None }));
+            }
+        }
+        qualified_type_names
     }
 
     // Return global variable information
@@ -531,6 +571,50 @@ fn get_varinfo_from_context(context: &[(gimli::DwTag, Option<String>)]) -> (Opti
     (function, namespaces)
 }
 
+fn is_named_scope(tag: gimli::DwTag) -> bool {
+    matches!(
+        tag,
+        gimli::constants::DW_TAG_namespace
+            | gimli::constants::DW_TAG_subprogram
+            | gimli::constants::DW_TAG_structure_type
+            | gimli::constants::DW_TAG_class_type
+            | gimli::constants::DW_TAG_union_type
+    )
+}
+
+fn make_qualified_type_name(context: &[(gimli::DwTag, Option<String>)], type_name: &str) -> String {
+    let mut qualified_name = context
+        .iter()
+        .filter(|(tag, _)| is_named_scope(*tag))
+        .filter_map(|(_, name)| name.as_deref())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    if !qualified_name.is_empty() {
+        qualified_name.push('.');
+    }
+    qualified_name.push_str(type_name);
+    qualified_name
+}
+
+fn make_a2l_type_names(typenames: &HashMap<String, Vec<usize>>, qualified_type_names: &HashMap<usize, String>) -> HashMap<usize, String> {
+    let mut a2l_type_names = HashMap::new();
+    for type_refs in typenames.values() {
+        let mut names = type_refs.iter().filter_map(|type_ref| qualified_type_names.get(type_ref));
+        let Some(first_name) = names.next() else {
+            continue;
+        };
+        if names.any(|name| name != first_name) {
+            for type_ref in type_refs {
+                if let Some(name) = qualified_type_names.get(type_ref) {
+                    a2l_type_names.insert(*type_ref, name.clone());
+                }
+            }
+        }
+    }
+    a2l_type_names
+}
+
 fn demangle_cpp_varnames(input: &[&String]) -> HashMap<String, String> {
     let mut demangled_symbols = HashMap::<String, String>::new();
     let demangle_opts = cpp_demangle::DemangleOptions::new().no_params().no_return_type();
@@ -589,6 +673,33 @@ mod test {
 
     // C++ type test fixture, see fixtures/cpp_types.cpp
     static ELF_FILE_NAMES: [&str; 1] = [concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/cpp_types.elf")];
+
+    #[test]
+    fn test_make_qualified_type_name() {
+        let context = vec![
+            (gimli::constants::DW_TAG_compile_unit, None),
+            (gimli::constants::DW_TAG_namespace, Some("namespace_1".to_string())),
+            (gimli::constants::DW_TAG_class_type, Some("Controller".to_string())),
+        ];
+
+        assert_eq!(make_qualified_type_name(&context, "TypeA"), "namespace_1.Controller.TypeA");
+    }
+
+    #[test]
+    fn test_make_a2l_type_names() {
+        let typenames = HashMap::from([("TypeA".to_string(), vec![1, 2]), ("TypeB".to_string(), vec![3, 4])]);
+        let qualified_type_names = HashMap::from([
+            (1, "namespace_1.TypeA".to_string()),
+            (2, "namespace_2.TypeA".to_string()),
+            (3, "common.TypeB".to_string()),
+            (4, "common.TypeB".to_string()),
+        ]);
+        let a2l_type_names = make_a2l_type_names(&typenames, &qualified_type_names);
+        assert_eq!(a2l_type_names.get(&1).map(String::as_str), Some("namespace_1.TypeA"));
+        assert_eq!(a2l_type_names.get(&2).map(String::as_str), Some("namespace_2.TypeA"));
+        assert!(!a2l_type_names.contains_key(&3));
+        assert!(!a2l_type_names.contains_key(&4));
+    }
 
     #[test]
     fn test_load_data() {

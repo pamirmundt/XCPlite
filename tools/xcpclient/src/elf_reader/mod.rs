@@ -112,12 +112,12 @@ impl ElfReader {
             DbgDataType::Float => McValueType::Float32Ieee,
             DbgDataType::Double => McValueType::Float64Ieee,
             DbgDataType::Struct { size, members, .. } => {
-                if let Some(type_name) = &type_info.name {
+                if let Some(type_name) = self.debug_data.get_a2l_type_name(type_info) {
                     // Register a typedef for the struct/class type (no-op if it already exists).
                     // The identifier is sanitized once (e.g. "TplStruct<short unsigned int>" -> "TplStruct_short_unsigned_int_")
                     // and used for the typedef, its fields and the McValueType::TypeDef reference.
                     // Inherited members of structs and classes are already flattened into `members` by the DWARF reader.
-                    let type_id = McIdentifier::from(type_name.clone());
+                    let type_id = McIdentifier::from(type_name.to_string());
                     if let Err(e) = self.register_struct(reg, object_type, type_id, *size as usize, members) {
                         error!("Failed to register typedef '{}' for struct/class type '{}': {}", type_id, type_name, e);
                     }
@@ -1184,6 +1184,8 @@ mod test {
 
     // C++ type test fixture, see fixtures/cpp_types.cpp (GCC 12.3 arm-none-eabi, DWARF 5)
     const CPP_TYPES_ELF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/cpp_types.elf");
+    // C++ type-name collision fixture, see fixtures/cpp_type_name_collisions.cpp
+    const CPP_TYPE_NAME_COLLISIONS_ELF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/cpp_type_name_collisions.elf");
 
     fn load_cpp_types() -> Registry {
         let elf_reader = ElfReader::new(CPP_TYPES_ELF, 0, usize::MAX).expect("failed to load fixtures/cpp_types.elf");
@@ -1273,6 +1275,34 @@ mod test {
         assert_eq!(inner_tpl.offset, 8);
     }
 
+    // Identically named types in different namespaces get distinct typedefs and matching instance references
+    #[test]
+    fn test_register_namespaced_types_with_colliding_names() {
+        let elf_reader = ElfReader::new(CPP_TYPE_NAME_COLLISIONS_ELF, 0, usize::MAX)
+            .expect("failed to load fixtures/cpp_type_name_collisions.elf");
+        let mut reg = Registry::new();
+        elf_reader.register_variables(&mut reg, false, 0, usize::MAX, "", "").expect("register_variables failed");
+
+        for (instance_name, expected_type_name) in [
+            ("g_namespace_1_type_a", "namespace_1.TypeA"),
+            ("g_namespace_2_type_a", "namespace_2.TypeA"),
+            ("g_namespace_1_type_b", "namespace_1.TypeB"),
+            ("g_namespace_2_type_b", "namespace_2.TypeB"),
+        ] {
+            let instance = reg
+                .instance_list
+                .get_instance(instance_name, McObjectType::Measurement, None)
+                .unwrap_or_else(|| panic!("instance '{instance_name}' not registered"));
+            assert_eq!(instance.dim_type.value_type, McValueType::new_typedef(expected_type_name), "{instance_name}");
+        }
+
+        assert_eq!(reg.typedef_list.len(), 4);
+        assert!(reg.typedef_list.find_typedef("namespace_1.TypeA").unwrap().find_field("member_1").is_some());
+        assert!(reg.typedef_list.find_typedef("namespace_2.TypeA").unwrap().find_field("member_2").is_some());
+        assert!(reg.typedef_list.find_typedef("namespace_1.TypeB").unwrap().find_field("member_2").is_some());
+        assert!(reg.typedef_list.find_typedef("namespace_2.TypeB").unwrap().find_field("member_3").is_some());
+    }
+
     // Build an ElfReader from hand-made debug data containing only event definition (evt__) and trigger (trg__) marker variables
     fn elf_reader_with_markers(markers: &[(&str, u64, &str)], event_section: Option<(u64, u64)>) -> ElfReader {
         use std::collections::HashMap;
@@ -1295,6 +1325,7 @@ mod test {
                 variables,
                 types: HashMap::new(),
                 typenames: HashMap::new(),
+                a2l_type_names: HashMap::new(),
                 demangled_names: HashMap::new(),
                 unit_names: vec![Some("main.c".to_string())],
                 sections,
